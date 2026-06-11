@@ -1,0 +1,290 @@
+function(target_info)
+    foreach(target IN LISTS ARGV)
+        if(NOT TARGET ${target})
+            message("${target} is not a cmake target")
+            continue()
+        endif()
+
+        message("target_info(${target}):")
+
+        get_target_property(type ${target} TYPE)
+        message("  Type: ${type}")
+
+        get_target_property(imported ${target} IMPORTED)
+        if(imported)
+            message("  Imported: Yes")
+
+            get_target_property(configs ${target} IMPORTED_CONFIGURATIONS)
+            if(configs)
+                foreach(config ${configs})
+                    message("    Config: ${config}")
+                    get_target_property(location ${target} IMPORTED_LOCATION_${config})
+                    message("      Location: ${location}")
+                endforeach()
+            endif()
+        else()
+            message("  Imported: No")
+        endif()
+
+        get_target_property(links ${target} LINK_LIBRARIES)
+        if(links)
+            message("  Link libraries:" ${links})
+        else()
+            message("  Link libraries: <None>")
+        endif()
+
+        get_target_property(interfaces ${target} INTERFACE_LINK_LIBRARIES)
+        if(interfaces)
+            message("  Link interfaces: ${interfaces}")
+        else()
+            message("  Link interfaces: <None>")
+        endif()
+
+        get_target_property(includes ${target} INTERFACE_INCLUDE_DIRECTORIES)
+        if(includes)
+            message("  Interface includes: ${includes}")
+        else()
+            message("  Interface includes: <None>")
+        endif()
+    endforeach()
+endfunction()
+
+function(post_copy_files)
+    cmake_parse_arguments(ARG "" "TARGET" "FILES" ${ARGN})
+
+    if(NOT ARG_TARGET)
+        message(FATAL_ERROR "post_copy_files(): Missing target")
+    endif()
+
+    if(NOT TARGET ${ARG_TARGET})
+        message(FATAL_ERROR "post_copy_files(): ${ARG_TARGET} is not a cmake target")
+    endif()
+
+    set(dest "$<TARGET_FILE_DIR:${ARG_TARGET}>")
+
+    foreach(file IN LISTS ARG_FILES)
+        get_filename_component(name "${file}" NAME)
+
+        add_custom_command(
+            TARGET ${ARG_TARGET}
+            POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E copy "${file}" "${dest}/${name}"
+            COMMENT "post_copy_files(): ${file} to ${dest}/${name}"
+        )
+    endforeach()
+endfunction()
+
+function(post_copy_different)
+    cmake_parse_arguments(ARG "" "TARGET" "FILES" ${ARGN})
+
+    if(NOT ARG_TARGET)
+        message(FATAL_ERROR "post_copy_files(): Missing target")
+    endif()
+
+    if(NOT TARGET ${ARG_TARGET})
+        message(FATAL_ERROR "post_copy_files(): ${ARG_TARGET} is not a cmake target")
+    endif()
+
+    set(dest "$<TARGET_FILE_DIR:${ARG_TARGET}>")
+
+    foreach(file IN LISTS ARG_FILES)
+        get_filename_component(name "${file}" NAME)
+
+        add_custom_command(
+            TARGET ${ARG_TARGET}
+            POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${file}" "${dest}/${name}"
+            COMMENT "post_copy_files(): ${file} to ${dest}/${name}"
+        )
+    endforeach()
+endfunction()
+
+function(post_copy_libs_to_target)
+    cmake_parse_arguments(ARG "" "TARGET" "LIBS" ${ARGN})
+
+    foreach(lib IN LISTS ARG_LIBS)
+        if(NOT TARGET ${lib})
+            message("post_copy_libs_to_target(): ${lib} is not a cmake target")
+            continue()
+        endif()
+
+        add_custom_command(
+            TARGET ${ARG_TARGET}
+            POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:${lib}>" "$<TARGET_FILE_DIR:${ARG_TARGET}>"
+            COMMENT "post_copy_libs_to_target(): $<TARGET_FILE:${lib}> to $<TARGET_FILE_DIR:${ARG_TARGET}>"
+        )
+    endforeach()
+endfunction()
+
+function(include_interface_dirs)
+    cmake_parse_arguments(ARG "" "TARGET" "DIRS" ${ARGN})
+
+    foreach(dir IN LISTS ARG_DIRS)
+        file(MAKE_DIRECTORY ${dir})
+        list(APPEND INCLUDES ${dir})
+    endforeach()
+
+    set_target_properties(
+        ${ARG_TARGET}
+        PROPERTIES
+            INTERFACE_INCLUDE_DIRECTORIES "${INCLUDES}"
+    )
+endfunction()
+
+function(import_interface_libs)
+    cmake_parse_arguments(ARG "" "TARGET" "SHARED;STATIC" ${ARGN})
+
+    foreach(path IN LISTS ARG_SHARED)
+        get_filename_component(name "${path}" NAME)
+        if(NOT TARGET ${name})
+            add_library(${name} SHARED IMPORTED)
+            set_target_properties(
+                ${name}
+                PROPERTIES
+                    IMPORTED_LOCATION ${path}
+            )
+        endif()
+        list(APPEND LIBRARIES ${name})
+    endforeach()
+
+    foreach(path IN LISTS ARG_STATIC)
+        get_filename_component(name "${path}" NAME)
+        if(NOT TARGET ${name})
+            add_library(${name} STATIC IMPORTED)
+            set_target_properties(
+                ${name}
+                PROPERTIES
+                    IMPORTED_LOCATION ${path}
+            )
+        endif()
+        list(APPEND LIBRARIES ${name})
+    endforeach()
+
+    set_target_properties(
+        ${ARG_TARGET}
+        PROPERTIES
+            INTERFACE_LINK_LIBRARIES "${LIBRARIES}"
+    )
+endfunction()
+
+function(download_file)
+    cmake_parse_arguments(ARG "FORCE" "REMOTE;LOCAL;TOKEN" "" ${ARGN})
+
+    if(NOT ARG_REMOTE OR NOT ARG_LOCAL)
+        message(FATAL_ERROR "download_file(): Requries REMOTE and LOCAL params")
+    endif()
+
+    if(NOT ARG_FORCE AND EXISTS "${ARG_LOCAL}")
+        message(STATUS "download_file(): File already exists - ${ARG_LOCAL}")
+        return()
+    endif()
+
+    message(STATUS "download_file(): Downloading ${ARG_REMOTE}")
+
+    file(
+        DOWNLOAD ${ARG_REMOTE} ${ARG_LOCAL}
+        HTTPHEADER "Authorization: Bearer ${ARG_TOKEN}"
+        SHOW_PROGRESS
+        STATUS DOWNLOAD_STATUS
+        LOG DOWNLOAD_LOG
+        TLS_VERIFY ON
+    )
+
+    list(GET DOWNLOAD_STATUS 0 STATUS_CODE)
+    list(GET DOWNLOAD_STATUS 1 STATUS_MSG)
+    if(NOT STATUS_CODE EQUAL 0)
+        message(FATAL_ERROR "download_file(): Failed ${STATUS_CODE} ${STATUS_MSG}\n${DOWNLOAD_LOG}")
+    endif()
+endfunction()
+
+function(download_deps)
+    cmake_parse_arguments(ARG "" "REMOTE;LOCAL" "" ${ARGN})
+    download_file(
+        REMOTE "https://raw.githubusercontent.com/Topsens/deps/master/${ARG_REMOTE}"
+        LOCAL  "${ARG_LOCAL}"
+        TOKEN  "$ENV{DEPS_TOKEN}"
+    )
+endfunction()
+
+function(curl_download_file)
+    cmake_parse_arguments(ARG "FORCE" "REMOTE;LOCAL;TOKEN" "" ${ARGN})
+
+    if(NOT ARG_REMOTE OR NOT ARG_LOCAL)
+        message(FATAL_ERROR "curl_download_file(): Requires REMOTE and LOCAL params")
+    endif()
+
+    if(NOT ARG_FORCE AND EXISTS "${ARG_LOCAL}")
+        message(STATUS "curl_download_file(): File already exists - ${ARG_LOCAL}")
+        return()
+    endif()
+
+    message(STATUS "curl_download_file(): Downloading ${ARG_REMOTE}")
+
+    get_filename_component(LOCAL_DIR "${ARG_LOCAL}" DIRECTORY)
+    file(MAKE_DIRECTORY "${LOCAL_DIR}")
+
+    set(
+        CURL_COMMAND
+        curl
+        --fail
+        --header "Authorization: Bearer ${ARG_TOKEN}"
+        --location
+        --progress-bar
+        --show-error
+        --output "${ARG_LOCAL}"
+        ${ARG_REMOTE}
+    )
+
+    execute_process(
+        COMMAND ${CURL_COMMAND}
+        RESULT_VARIABLE CURL_RESULT
+        OUTPUT_VARIABLE CURL_OUTPUT
+        ERROR_VARIABLE  CURL_ERROR
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_STRIP_TRAILING_WHITESPACE
+    )
+
+    if(NOT CURL_RESULT EQUAL 0)
+        message(
+            FATAL_ERROR
+            "curl_download_file(): Failed with code ${CURL_RESULT}\n"
+            "REMOTE: ${ARG_REMOTE}\n"
+            "ERROR: ${CURL_ERROR}"
+        )
+    endif()
+endfunction()
+
+function(curl_download_deps)
+    cmake_parse_arguments(ARG "" "REMOTE;LOCAL" "" ${ARGN})
+    curl_download_file(
+        REMOTE "https://raw.githubusercontent.com/Topsens/deps/master/${ARG_REMOTE}"
+        LOCAL  "${ARG_LOCAL}"
+        TOKEN  "$ENV{DEPS_TOKEN}"
+    )
+endfunction()
+
+function(set_system_proxy)
+    if(WIN32)
+        set(ENV{HTTP_PROXY}  "")
+        set(ENV{HTTPS_PROXY} "")
+
+        execute_process(
+            COMMAND powershell -NoProfile -Command "Get-ItemPropertyValue 'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Internet Settings' -Name ProxyEnable"
+            OUTPUT_VARIABLE ProxyEnable
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+        )
+        message(STATUS "ProxyEnable = ${ProxyEnable}")
+
+        if(ProxyEnable EQUAL 1)
+            execute_process(
+                COMMAND powershell -NoProfile -Command "Get-ItemPropertyValue 'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Internet Settings' -Name ProxyServer"
+                OUTPUT_VARIABLE ProxyServer
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+            )
+            message(STATUS "ProxyServer = ${ProxyServer}")
+            set(ENV{HTTP_PROXY}  "${ProxyServer}")
+            set(ENV{HTTPS_PROXY} "${ProxyServer}")
+        endif()
+    endif()
+endfunction()
